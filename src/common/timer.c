@@ -23,6 +23,7 @@
 #include "common.h"
 
 #include "timer.h"
+#include <sys/time.h> //PB:
 
 #include <stdlib.h>
 
@@ -86,8 +87,8 @@ void timesdiv(struct timespec *tvs, COUNTER div)
 }
 
 void
-init_timestamp(timestamp_t *ctx)
+init_timestamp(struct timespec *timestamp) //PB:
 {
-    timerclear(ctx);
+    timesclear(timestamp); //PB:
 }
 

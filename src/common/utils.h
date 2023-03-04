@@ -31,11 +31,11 @@ typedef struct {
     COUNTER bytes_sent;
     COUNTER pkts_sent;
     COUNTER failed;
-    struct timeval start_time;
-    struct timeval time_delta;
-    struct timeval end_time;
-    struct timeval pkt_ts_delta;
-    struct timeval last_print;
+    struct timespec start_time; //PB:
+    struct timespec time_delta;
+    struct timespec end_time;
+    struct timespec pkt_ts_delta;
+    struct timespec last_print;
     COUNTER flow_non_flow_packets;
     COUNTER flows;
     COUNTER flows_unique;

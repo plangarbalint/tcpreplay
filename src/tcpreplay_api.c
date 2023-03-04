@@ -31,6 +31,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <time.h>
 
 #include "tcpreplay_api.h"
 #include "send_packets.h"
@@ -165,7 +166,8 @@ tcpreplay_post_args(tcpreplay_t *ctx, int argc)
 #endif
 
     options->loop = OPT_VALUE_LOOP;
-    options->loopdelay_ms = OPT_VALUE_LOOPDELAY_MS;
+    options->loopdelay_ms = OPT_VALUE_LOOPDELAY_MS * 1000; //PB: we need to convert every microsecond to nanosecond
+    options->loopdelay_ns = OPT_VALUE_LOOPDELAY_NS; //PB: it needs more work to integrate this solution
 
     if (HAVE_OPT(LIMIT))
         options->limit_send = OPT_VALUE_LIMIT;
@@ -284,7 +286,7 @@ tcpreplay_post_args(tcpreplay_t *ctx, int argc)
     if (HAVE_OPT(FLOW_EXPIRY)) {
         options->flow_expiry = OPT_VALUE_FLOW_EXPIRY;
     }
-
+    ctx->timefunction.gettime = &get_time_of_day; //PB:
     if (HAVE_OPT(TIMER)) {
         if (strcmp(OPT_ARG(TIMER), "select") == 0) {
 #ifdef HAVE_SELECT
@@ -305,6 +307,7 @@ tcpreplay_post_args(tcpreplay_t *ctx, int argc)
             options->accurate = accurate_gtod;
         } else if (strcmp(OPT_ARG(TIMER), "nano") == 0) {
             options->accurate = accurate_nanosleep;
+            ctx->timefunction.gettime = &clock_get_time;
         } else if (strcmp(OPT_ARG(TIMER), "abstime") == 0) {
             tcpreplay_seterr(ctx, "%s", "abstime is deprecated");
             ret = -1;
@@ -1122,7 +1125,7 @@ tcpreplay_replay(tcpreplay_t *ctx)
         tcpreplay_seterr(ctx, "invalid dualfile source count: %d", ctx->options->source_cnt);
         return -1;
     }
-
+    
     init_timestamp(&ctx->stats.start_time);
     init_timestamp(&ctx->stats.time_delta);
     init_timestamp(&ctx->stats.end_time);
@@ -1355,4 +1358,14 @@ int tcpreplay_get_flow_expiry(tcpreplay_t *ctx)
     assert(ctx);
 
     return ctx->options->flow_expiry;
+}
+
+void get_time_of_day(struct timespec *ts) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    TIMEVAL_TO_TIMESPEC(&tv, ts);
+}
+
+void clock_get_time(struct timespec *ts){
+    clock_gettime(CLOCK_REALTIME, ts);
 }

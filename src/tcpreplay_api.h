@@ -96,6 +96,10 @@ typedef struct {
     char *filename;
 } tcpreplay_source_t;
 
+typedef struct time_function { //PB: I think we can delete the upper time_function 
+    void (*gettime)(struct timespec*);
+} time_function;
+
 /* run-time options */
 typedef struct tcpreplay_opt_s {
     /* input/output */
@@ -105,6 +109,7 @@ typedef struct tcpreplay_opt_s {
     tcpreplay_speed_t speed;
     COUNTER loop;
     u_int32_t loopdelay_ms;
+    u_int64_t loopdelay_ns; //PB: nanosec loopdelay
 
     int stats;
     bool use_pkthdr_len;
@@ -189,6 +194,7 @@ typedef struct tcpreplay_s {
     struct timespec nap;
     uint32_t skip_packets;
     bool first_time;
+    struct time_function timefunction;  //PB: pointer to a void time function
 
     /* counter stats */
     tcpreplay_stats_t stats;
@@ -277,6 +283,8 @@ int tcpreplay_set_verbose(tcpreplay_t *, bool);
 int tcpreplay_set_tcpdump_args(tcpreplay_t *, char *);
 int tcpreplay_set_tcpdump(tcpreplay_t *, tcpdump_t *);
 
+void get_time_of_day(struct timespec *ts); //PB:
+void clock_get_time(struct timespec *ts); //PB:
 /*
  * These functions are seen by the outside world, but nobody should ever use them
  * outside of internal tcpreplay API functions
