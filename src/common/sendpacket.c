@@ -230,6 +230,7 @@ int
 sendpacket(sendpacket_t *sp, const u_char *data, size_t len, struct pcap_pkthdr *pkthdr)
 {
     int retcode = 0, val;
+    int batch_size = 1;
     static u_char buffer[10000]; /* 10K bytes, enough for jumbo frames + pkthdr
                                   * larger than page size so made static to
                                   * prevent page misses on stack
@@ -425,6 +426,32 @@ TRY_SEND_AGAIN:
 #endif /* HAVE_PCAP_INJECT || HAVE_PCAP_SENDPACKET */
 
             break;
+        case SP_TYPE_AF_XDP:
+            #ifdef HAVE_AF_XDP
+                xq_enq_tx_only(&sp->xsk->tx, sp->tx_next_idx, len);
+                // To start the transfer a sendmsg() system call is required. This might be relaxed in the future.
+
+                retcode = sendto(sp->handle.fd, NULL, 0, MSG_DONTWAIT, NULL, 0);
+                if (retcode < 0 && !sp->abort) {
+                    switch (errno) {
+                        case EAGAIN:
+                            sp->retry_eagain ++;
+                            goto TRY_SEND_AGAIN;
+                            break;
+                        case ENOBUFS:
+                            sp->retry_enobufs ++;
+                            goto TRY_SEND_AGAIN;
+                            break;
+                        default:
+                            sendpacket_seterr(sp, "Error with %s [" COUNTER_SPEC "]: %s (errno = %d)",
+                                    INJECT_METHOD, sp->sent + sp->failed + 1, strerror(errno), errno);
+                    }
+                }
+                sp->xsk->outstanding_tx += batch_size;
+                sp->tx_next_idx += batch_size;
+                sp->tx_next_idx %= sp->number_of_frames;
+            #endif
+            break;
 
         case SP_TYPE_NETMAP:
 #ifdef HAVE_NETMAP
@@ -542,6 +569,8 @@ sendpacket_open(const char *device, char *errbuf, tcpr_dir_t direction,
             sp = sendpacket_open_libdnet(device, errbuf);
 #elif (defined HAVE_PCAP_INJECT || defined HAVE_PCAP_SENDPACKET)
             sp = sendpacket_open_pcap(device, errbuf);
+#elif defined HAVE_AF_XDP
+            sp = sendpacket_open_xdp(device, errbuf);
 #else
 #error "No defined packet injection method for sendpacket_open()"
 #endif
@@ -1333,3 +1362,161 @@ sendpacket_abort(sendpacket_t *sp)
 
     sp->abort = true;
 }
+
+#ifdef HAVE_AF_XDP
+static sendpacket_t * sendpacket_open_xdp(const char *device, char *errbuf){
+
+    int ndescs = 1024;
+    int number_of_frames = 131072;
+    struct sockaddr_xdp sxdp = {};
+	struct xdp_mmap_offsets off;
+	int mysocket; 
+	socklen_t optlen;
+    sendpacket_t *sp;
+
+    assert(device);
+    assert(errbuf);
+
+    /* open AF_XDP socket */
+    if ((mysocket = socket(AF_XDP, SOCK_RAW, 0)) < 0) {
+        snprintf(errbuf, SENDPACKET_ERRBUF_SIZE, "socket: %s", strerror(errno));
+        return NULL;
+    }
+
+	struct xdpsock *xsk = safe_malloc(sizeof(*xsk));
+	xsk->sfd = mysocket;
+	xsk->outstanding_tx = 0;
+
+    /*Create and configure UMEM*/
+	xsk->umem = xdp_umem_configure(mysocket, errbuf, number_of_frames);
+    if(xsk->umem == NULL){
+        close(mysocket);
+        snprintf(errbuf, SENDPACKET_ERRBUF_SIZE, "AF_XDP UMEM configuration was not successful: %s", strerror(errno));
+        return NULL;
+    }
+
+	setsockopt(mysocket, SOL_XDP, XDP_TX_RING, &ndescs, sizeof(int));
+	optlen = sizeof(off);
+	getsockopt(mysocket, SOL_XDP, XDP_MMAP_OFFSETS, &off, &optlen);
+	
+    /* Tx */
+	xsk->tx.map = mmap(NULL, off.tx.desc + ndescs * sizeof(struct xdp_desc), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, mysocket, XDP_PGOFF_TX_RING);
+	if((xsk->tx.map) == MAP_FAILED){
+        close(mysocket);
+        snprintf(errbuf, SENDPACKET_ERRBUF_SIZE, "mmap of Tx ring was not successful: %s", strerror(errno));
+        return NULL;
+    };
+
+	xsk->tx.mask = ndescs - 1;
+	xsk->tx.size = ndescs;
+	xsk->tx.producer = xsk->tx.map + off.tx.producer;
+	xsk->tx.consumer = xsk->tx.map + off.tx.consumer;
+	xsk->tx.ring = xsk->tx.map + off.tx.desc;
+	xsk->tx.cached_cons = ndescs;
+
+    /* get the interface id for the device */
+    int interface_index = get_iface_index(mysocket, device, errbuf);
+    if (interface_index < 0) {
+        close(mysocket);
+        snprintf(errbuf, SENDPACKET_ERRBUF_SIZE, "Can't get index of device interface: %s", strerror(errno));
+        return NULL;
+    }
+
+	sxdp.sxdp_family = AF_XDP;
+	sxdp.sxdp_ifindex = interface_index;
+	sxdp.sxdp_queue_id = 0;
+    sxdp.sxdp_flags = XDP_ZEROCOPY;
+    if (bind(mysocket, (struct sockaddr *)&sxdp, sizeof(sxdp)) < 0) {
+        snprintf(errbuf, SENDPACKET_ERRBUF_SIZE, "bind error: %s", strerror(errno));
+        close(mysocket);
+        return NULL;
+    }
+
+	sp = (sendpacket_t *)safe_malloc(sizeof(sendpacket_t));
+    strlcpy(sp->device, device, sizeof(sp->device));
+    sp->handle.fd = mysocket;
+    sp->handle_type = SP_TYPE_AF_XDP;
+    sp->xsk = xsk;
+    sp->number_of_frames = number_of_frames;
+
+    return sp;
+    //Keredesek:
+    //- kell a queue id a bind elott ezt hogyan hatarozom meg? user-tol bekerni akar parancsa argumentumakent vagy fgv-el kivalasztani hogy melyik
+    //- hardware tamogatas kell zero copy mode-hoz ezt hogyan tudom leellenorizni. Driver tamogatas kell, ellenorizni ott tudom ahol a zero copy flag
+    //- kuldes hogyan legyen azt nem teljesen latom at
+
+}
+
+struct xdp_umem* xdp_umem_configure(int sfd,  char *errbuf, int number_of_frames)
+{
+	int cq_size = 1024;
+    int frame_headroom = 0;
+	struct xdp_mmap_offsets off;
+	struct xdp_umem_reg mr;
+	socklen_t optlen;
+	void *bufs = NULL;
+	struct xdp_umem *umem = safe_malloc(sizeof(*umem));
+    struct ifreq ifr;
+
+    /*get MTU value*/
+    if (ioctl(sfd, SIOCGIFMTU, &ifr) < 0) {
+        close(sfd);
+        snprintf(errbuf, SENDPACKET_ERRBUF_SIZE, "Error getting MTU: %s", strerror(errno));
+        return NULL;
+    }
+    
+    int frame_size = ifr.ifr_ifru.ifru_mtu;
+	if(posix_memalign(&bufs, getpagesize(), number_of_frames * frame_size) < 0){
+        snprintf(errbuf, SENDPACKET_ERRBUF_SIZE, "posix memory alignment was not successful: %s", strerror(errno));
+        return NULL;
+    };
+
+	mr.addr = (__u64)bufs;
+	mr.len = number_of_frames * frame_size;
+	mr.chunk_size = frame_size;
+	mr.headroom = frame_headroom;
+	setsockopt(sfd, SOL_XDP, XDP_UMEM_REG, &mr, sizeof(mr));
+	setsockopt(sfd, SOL_XDP, XDP_UMEM_COMPLETION_RING, &cq_size, sizeof(int));
+	optlen = sizeof(off);
+	getsockopt(sfd, SOL_XDP, XDP_MMAP_OFFSETS, &off, &optlen);
+	
+    umem->cq.map = mmap(0, off.cr.desc + cq_size * sizeof(__u64), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, sfd, XDP_UMEM_PGOFF_COMPLETION_RING);
+    if(umem->cq.map == MAP_FAILED){
+        snprintf(errbuf, SENDPACKET_ERRBUF_SIZE, "mmap of completion queue was not successful: %s", strerror(errno));
+        return NULL;
+    };
+
+	umem->cq.mask = cq_size - 1;
+	umem->cq.size = cq_size;
+	umem->cq.producer = umem->cq.map + off.cr.producer;
+	umem->cq.consumer = umem->cq.map + off.cr.consumer;
+	umem->cq.ring = umem->cq.map + off.cr.desc;
+	umem->frames = bufs;
+	umem->fd = sfd;
+
+	return umem;
+}
+
+static  u_int32_t xq_nb_free(struct xdp_uqueue *q, u_int32_t ndescs)
+{
+	u_int32_t free_entries = q->cached_cons - q->cached_prod;
+	if (free_entries >= ndescs)
+		return free_entries;
+	q->cached_cons = *q->consumer + q->size;
+	return q->cached_cons - q->cached_prod;
+}
+
+int xq_enq_tx_only(struct xdp_uqueue *uq, unsigned int id, int len)
+{
+	struct xdp_desc *r = uq->ring;
+    int frame_shift = 11;
+    
+    u_int32_t idx = uq->cached_prod++ & uq->mask; // next available slot in the XDP ring buffer
+    r[idx].addr	= id << frame_shift;
+    r[idx].len	= len - 1;
+
+	// barrier();
+	*uq->producer = uq->cached_prod;
+	return 0;
+}
+#endif /*HAVE_AF_XDP*/

@@ -49,6 +49,16 @@
 #define PCAP_DONT_INCLUDE_PCAP_BPF_H 1
 #endif
 
+#define HAVE_AF_XDP
+
+#ifdef HAVE_AF_XDP
+#define PCAP_DONT_INCLUDE_PCAP_BPF_H
+struct bpf_program {
+	u_int bf_len;
+	struct bpf_insn *bf_insns;
+};
+#endif
+
 #if defined INCLUDE_PCAP_BPF_H_FILE && !defined PCAP_DONT_INCLUDE_PCAP_BPF_H
 #include "@INCLUDE_PCAP_BPF_HEADER@"
 #define PCAP_DONT_INCLUDE_PCAP_BPF_H 1 /* don't re-include it in pcap.h */

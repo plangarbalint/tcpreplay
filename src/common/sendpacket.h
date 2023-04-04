@@ -59,6 +59,11 @@
 #ifndef _SENDPACKET_H_
 #define _SENDPACKET_H_
 
+#ifdef HAVE_AF_XDP
+#include <linux/if_xdp.h>
+#include <sys/mman.h>
+#endif /*HAVE_AF_XDP*/
+
 typedef enum sendpacket_type_e {
     SP_TYPE_NONE,
     SP_TYPE_LIBNET,
@@ -69,7 +74,8 @@ typedef enum sendpacket_type_e {
     SP_TYPE_TX_RING,
     SP_TYPE_KHIAL,
     SP_TYPE_NETMAP,
-    SP_TYPE_TUNTAP
+    SP_TYPE_TUNTAP,
+    SP_TYPE_AF_XDP
 } sendpacket_type_t;
 
 /* these are the file_operations ioctls */
@@ -145,10 +151,57 @@ struct sendpacket_s {
     txring_t * tx_ring;
 #endif
 #endif
+#ifdef HAVE_AF_XDP
+    struct xdpsock *xsk;
+    int number_of_frames;
+    int tx_next_idx;
+#endif
     bool abort;
 };
 
 typedef struct sendpacket_s sendpacket_t;
+
+#ifdef HAVE_AF_XDP
+struct xdp_uqueue {
+    
+	u_int32_t cached_prod;
+	u_int32_t cached_cons;
+	u_int32_t mask;
+	u_int32_t size;
+	u_int32_t *producer;
+	u_int32_t *consumer;
+	struct xdp_desc *ring;
+	void *map;
+};
+struct xdp_umem_uqueue {
+	u_int32_t cached_prod;
+	u_int32_t cached_cons;
+	u_int32_t mask;
+	u_int32_t size;
+	u_int32_t *producer;
+	u_int32_t *consumer;
+	u_int64_t *ring;
+	void *map;
+};
+struct xdp_umem {
+	char *frames;
+	struct xdp_umem_uqueue fq;
+	struct xdp_umem_uqueue cq;
+	int fd;
+};
+struct xdpsock {
+	struct xdp_uqueue rx;
+	struct xdp_uqueue tx;
+	int sfd;
+	struct xdp_umem *umem;
+	u_int32_t outstanding_tx;
+	unsigned long rx_npkts;
+	unsigned long tx_npkts;
+	unsigned long prev_rx_npkts;
+	unsigned long prev_tx_npkts;
+};
+#endif
+
 
 int sendpacket(sendpacket_t *, const u_char *, size_t, struct pcap_pkthdr *);
 void sendpacket_close(sendpacket_t *);
@@ -159,6 +212,12 @@ struct tcpr_ether_addr *sendpacket_get_hwaddr(sendpacket_t *);
 int sendpacket_get_dlt(sendpacket_t *);
 const char *sendpacket_get_method(sendpacket_t *);
 void sendpacket_abort(sendpacket_t *);
+
+#ifdef HAVE_AF_XDP
+static sendpacket_t *sendpacket_open_xdp(const char *, char *);
+struct xdp_umem* xdp_umem_configure(int sfd,  char *errbuf, int number_of_frames);
+int xq_enq_tx_only(struct xdp_uqueue *uq, unsigned int id, int len);
+#endif
 
 #endif /* _SENDPACKET_H_ */
 
