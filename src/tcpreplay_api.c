@@ -1168,8 +1168,8 @@ tcpreplay_replay(tcpreplay_t *ctx)
                 get_current_time(&ctx->stats.end_time);
                 if (ctx->options->stats == 0) {
                     packet_stats(&ctx->stats);
+                }
             }
-
             #ifdef HAVE_LIBXDP
             sendpacket_t* sp = ctx->intf1;
             if(sp->handle_type == SP_TYPE_LIBXDP){

@@ -69,7 +69,7 @@ static void calc_sleep_time(tcpreplay_t *ctx, struct timespec *pkt_time,
         sendpacket_t *sp, COUNTER counter, struct timespec *sent_timestamp,
         COUNTER start_us, COUNTER *skip_length);
 static void tcpr_sleep(tcpreplay_t *ctx, sendpacket_t *sp _U_,
-        struct timespec *nap_this_time, struct timeval *now);
+        struct timespec *nap_this_time, struct timespec *now);
 static u_char *get_next_packet(tcpreplay_opt_t *options, pcap_t *pcap,
         struct pcap_pkthdr *pkthdr,
         int file_idx,
